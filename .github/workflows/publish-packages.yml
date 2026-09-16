@@ -27,6 +27,9 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Add GitHub Packages Source
+        run: dotnet nuget add source "https://nuget.pkg.github.com/kzxl/index.json" --name "github" --username kzxl --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text
+
       - name: Pack ZeroStorage.Core
         run: dotnet pack src/ZeroStorage.Core/ZeroStorage.Core.csproj -c Release -o nupkgs
 
