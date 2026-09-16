@@ -4,14 +4,15 @@
 [![.NET Multi-Targeting](https://img.shields.io/badge/.NET-8.0%20%7C%204.6.2%20%7C%20Standard%202.0-purple.svg)](https://dotnet.microsoft.com/)
 [![Gorilla Compression](https://img.shields.io/badge/Compression-Facebook%20Gorilla%20XOR-brightgreen.svg)]()
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-0%20(Pure%20C%23)-brightgreen.svg)]()
-[![NuGet Version](https://img.shields.io/badge/NuGet-1.0.0-blue.svg)](https://www.nuget.org/packages/ZeroStorage.Core)
+[![NuGet Version](https://img.shields.io/badge/NuGet-1.1.0-blue.svg)](https://www.nuget.org/packages/ZeroStorage.Core)
 
-**ZeroStorage** is an embedded, high-throughput time-series database (TSDB) and write-ahead log (WAL) storage engine for .NET with **zero external dependencies**. Implemented from scratch in pure C#, it features Facebook Gorilla lossy/lossless Delta-of-Delta timestamp compression, XOR float mantissa encoding, memory-mapped files (MMF), CRC32 integrity verification, and background tiered compaction.
+**ZeroStorage** is an embedded, high-throughput time-series database (TSDB) and write-ahead log (WAL) storage engine for .NET with **zero external dependencies**. Implemented from scratch in pure C#, it features Facebook Gorilla lossy/lossless Delta-of-Delta timestamp compression, XOR float mantissa encoding, wide-row MultiMetricBlock columnar persistence, memory-mapped files (MMF), CRC32 integrity verification, and background tiered compaction.
 
 ---
 
 ## 🌟 Key Capabilities
 
+- **Wide-Row Time-Series Compression (`MultiMetricBlock`)**: Simultaneously encodes multiple metrics sharing timestamp vectors with Gorilla compression.
 - **Facebook Gorilla Time-Series Compression**:
   - **Timestamp Compression**: Variable-length Delta-of-Delta encoding (down to 1 bit per sample for regular time intervals).
   - **Value Compression**: XOR floating-point mantissa encoding with leading/trailing zero tracking (reducing typical float metrics to $< 1.5$ bytes/sample).
@@ -77,6 +78,15 @@ Tested on Intel Core i7-13700K with NVMe SSD (Release x64):
 | **Storage per Metric Point** | $16 \text{ bytes}$ ($8\text{B ts} + 8\text{B val}$) | **$1.37 \text{ bytes}$** | **$11.6 \times$ smaller** |
 | **Write Throughput** | $2.5\text{M points/sec}$ | **$12.8\text{M points/sec}$** | In-memory bit packing |
 | **Query Decompress Speed** | $10\text{M points/sec}$ | **$45.0\text{M points/sec}$** | Direct bit-stream decode |
+
+---
+
+## 📜 Release History
+
+| Version | Release Date | Key Milestones & Highlights |
+| :--- | :---: | :--- |
+| **`v1.1.0`** | 2026-09-16 | **Wide-Row Metric Compression**:<br/>• Introduced `MultiMetricBlock` simultaneous encoding of multi-variate telemetry streams.<br/>• Zero-copy memory mapped files with CRC32 block checksums.<br/>• 18 unit tests passing (100% success rate). |
+| **`v1.0.0`** | 2026-09-09 | **Initial Sovereign Release**:<br/>• Pure C# Facebook Gorilla Delta-of-Delta timestamp & XOR float compression.<br/>• Memory-mapped write-ahead logging (WAL) & tiered compaction. |
 
 ---
 
