@@ -267,6 +267,81 @@ namespace ZeroStorage.Core.Engine
             }
         }
 
+        /// <summary>
+        /// Computes aggregate statistics (Min, Max, Sum, Count, Mean) over a time window across both disk segments
+        /// and active MemTable points using header-only aggregate push-down.
+        /// </summary>
+        public BlockAggregateSummary Aggregate(int metricId, long fromTimeMs, long toTimeMs)
+        {
+            lock (_syncRoot)
+            {
+                int totalCount = 0;
+                double min = double.MaxValue;
+                double max = double.MinValue;
+                double sum = 0.0;
+
+                // 1. Push-down aggregates to immutable disk segments
+                for (int s = 0; s < _segments.Count; s++)
+                {
+                    var segAgg = _segments[s].Aggregate(metricId, fromTimeMs, toTimeMs);
+                    if (segAgg.Count > 0)
+                    {
+                        totalCount += segAgg.Count;
+                        if (segAgg.Min < min) min = segAgg.Min;
+                        if (segAgg.Max > max) max = segAgg.Max;
+                        sum += segAgg.Sum;
+                    }
+                }
+
+                // 2. Aggregate active MemTable points
+                if (_memTable.TryGetValue(metricId, out var memList))
+                {
+                    for (int i = 0; i < memList.Count; i++)
+                    {
+                        var pt = memList[i];
+                        if (pt.TimestampMs >= fromTimeMs && pt.TimestampMs <= toTimeMs)
+                        {
+                            totalCount++;
+                            if (pt.Value < min) min = pt.Value;
+                            if (pt.Value > max) max = pt.Value;
+                            sum += pt.Value;
+                        }
+                    }
+                }
+
+                if (totalCount == 0)
+                {
+                    return BlockAggregateSummary.Empty(metricId, fromTimeMs, toTimeMs);
+                }
+
+                return new BlockAggregateSummary(metricId, totalCount, min, max, sum, fromTimeMs, toTimeMs);
+            }
+        }
+
+        /// <summary>
+        /// Computes aggregate statistics for all series matching measurement name and tag filters.
+        /// </summary>
+        public Dictionary<int, BlockAggregateSummary> QuerySeriesAggregate(
+            string? measurement,
+            long fromTimeMs,
+            long toTimeMs,
+            params KeyValuePair<string, string>[] tagFilters)
+        {
+            lock (_syncRoot)
+            {
+                int[] seriesIds = _tagIndex.FindSeries(measurement, tagFilters);
+                var result = new Dictionary<int, BlockAggregateSummary>(seriesIds.Length);
+
+                for (int i = 0; i < seriesIds.Length; i++)
+                {
+                    int sId = seriesIds[i];
+                    result[sId] = Aggregate(sId, fromTimeMs, toTimeMs);
+                }
+
+                return result;
+            }
+        }
+
         #endregion
 
         #region Compaction and Lifecycle

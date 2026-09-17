@@ -266,6 +266,128 @@ namespace ZeroStorage.Core.Persistence
             }
         }
 
+        /// <summary>
+        /// Computes aggregate statistics (Min, Max, Sum, Count, Mean) over a time window [fromTimeMs, toTimeMs].
+        /// Employs O(1) header-only aggregate push-down: fully enclosed blocks read precalculated stats
+        /// directly from headers or sparse index without decompressing payload data.
+        /// </summary>
+        public BlockAggregateSummary Aggregate(int metricId, long fromTimeMs, long toTimeMs)
+        {
+            lock (_syncRoot)
+            {
+                int totalCount = 0;
+                double min = double.MaxValue;
+                double max = double.MinValue;
+                double sum = 0.0;
+
+                if (_sparseIndex != null)
+                {
+                    var entries = _sparseIndex.QueryOverlappingEntries(metricId, fromTimeMs, toTimeMs);
+                    for (int i = 0; i < entries.Count; i++)
+                    {
+                        var entry = entries[i];
+
+                        // Case 1: Fully enclosed block -> O(1) direct header stat accumulation
+                        if (entry.StartTimeMs >= fromTimeMs && entry.EndTimeMs <= toTimeMs)
+                        {
+                            if (entry.Count > 0)
+                            {
+                                totalCount += entry.Count;
+                                if (entry.Min < min) min = entry.Min;
+                                if (entry.Max > max) max = entry.Max;
+                                sum += entry.Sum;
+                            }
+                        }
+                        else
+                        {
+                            // Case 2: Boundary block straddling fromTimeMs or toTimeMs -> decompress & filter
+                            long blockOffset = entry.FileOffset;
+                            int dataLen = _accessor.ReadInt32(blockOffset + 48);
+                            byte[] data = new byte[dataLen];
+                            _accessor.ReadArray(blockOffset + 52, data, 0, dataLen);
+
+                            var block = new TimeSeriesBlock(entry.MetricId, entry.StartTimeMs, entry.EndTimeMs, entry.Count, entry.Min, entry.Max, entry.Sum, data);
+                            var points = block.Decompress();
+
+                            for (int p = 0; p < points.Count; p++)
+                            {
+                                var pt = points[p];
+                                if (pt.TimestampMs >= fromTimeMs && pt.TimestampMs <= toTimeMs)
+                                {
+                                    totalCount++;
+                                    if (pt.Value < min) min = pt.Value;
+                                    if (pt.Value > max) max = pt.Value;
+                                    sum += pt.Value;
+                                }
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Linear header scan without index
+                    long offset = HeaderSize;
+                    for (int i = 0; i < _blockCount; i++)
+                    {
+                        int mId = _accessor.ReadInt32(offset + 0);
+                        long start = _accessor.ReadInt64(offset + 4);
+                        long end = _accessor.ReadInt64(offset + 12);
+                        int count = _accessor.ReadInt32(offset + 20);
+                        double bMin = _accessor.ReadDouble(offset + 24);
+                        double bMax = _accessor.ReadDouble(offset + 32);
+                        double bSum = _accessor.ReadDouble(offset + 40);
+                        int dataLen = _accessor.ReadInt32(offset + 48);
+
+                        if (mId == metricId && end >= fromTimeMs && start <= toTimeMs)
+                        {
+                            if (start >= fromTimeMs && end <= toTimeMs)
+                            {
+                                // Fully enclosed block -> read header only, skip payload
+                                if (count > 0)
+                                {
+                                    totalCount += count;
+                                    if (bMin < min) min = bMin;
+                                    if (bMax > max) max = bMax;
+                                    sum += bSum;
+                                }
+                            }
+                            else
+                            {
+                                // Boundary block
+                                byte[] data = new byte[dataLen];
+                                _accessor.ReadArray(offset + 52, data, 0, dataLen);
+
+                                var block = new TimeSeriesBlock(mId, start, end, count, bMin, bMax, bSum, data);
+                                var points = block.Decompress();
+
+                                for (int p = 0; p < points.Count; p++)
+                                {
+                                    var pt = points[p];
+                                    if (pt.TimestampMs >= fromTimeMs && pt.TimestampMs <= toTimeMs)
+                                    {
+                                        totalCount++;
+                                        if (pt.Value < min) min = pt.Value;
+                                        if (pt.Value > max) max = pt.Value;
+                                        sum += pt.Value;
+                                    }
+                                }
+                            }
+                        }
+
+                        offset += 52 + dataLen;
+                    }
+                }
+
+                if (totalCount == 0)
+                {
+                    return BlockAggregateSummary.Empty(metricId, fromTimeMs, toTimeMs);
+                }
+
+                return new BlockAggregateSummary(metricId, totalCount, min, max, sum, fromTimeMs, toTimeMs);
+            }
+        }
+
+
         public void Dispose()
         {
             if (_disposed) return;
