@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.MemoryMappedFiles;
+using ZeroStorage.Core.Indexing;
 using ZeroStorage.Core.TimeSeries;
 
 namespace ZeroStorage.Core.Persistence
@@ -25,11 +26,18 @@ namespace ZeroStorage.Core.Persistence
 
         private int _blockCount;
         private long _writeOffset;
+        private SparseTimeIndex? _sparseIndex;
 
         public int BlockCount => _blockCount;
         public long CurrentSize => _writeOffset;
+        public string FilePath => _filePath;
+        public SparseTimeIndex? SparseIndex
+        {
+            get => _sparseIndex;
+            set => _sparseIndex = value;
+        }
 
-        public MemoryMappedTimeSeriesLog(string filePath, long initialCapacity = 16 * 1024 * 1024)
+        public MemoryMappedTimeSeriesLog(string filePath, long initialCapacity = 16 * 1024 * 1024, bool enableSparseIndex = false)
         {
             _filePath = filePath ?? throw new ArgumentNullException(nameof(filePath));
 
@@ -55,6 +63,11 @@ namespace ZeroStorage.Core.Persistence
 
                 _blockCount = 0;
                 _writeOffset = HeaderSize;
+
+                if (enableSparseIndex)
+                {
+                    _sparseIndex = new SparseTimeIndex();
+                }
             }
             else
             {
@@ -67,6 +80,23 @@ namespace ZeroStorage.Core.Persistence
 
                 _blockCount = _accessor.ReadInt32(8);
                 _writeOffset = _accessor.ReadInt64(12);
+
+                string companionIdx = filePath + ".tidx";
+                if (File.Exists(companionIdx))
+                {
+                    try
+                    {
+                        _sparseIndex = SparseTimeIndex.Load(companionIdx);
+                    }
+                    catch
+                    {
+                        if (enableSparseIndex) _sparseIndex = SparseTimeIndex.BuildFromLog(this);
+                    }
+                }
+                else if (enableSparseIndex)
+                {
+                    _sparseIndex = SparseTimeIndex.BuildFromLog(this);
+                }
             }
         }
 
@@ -105,6 +135,20 @@ namespace ZeroStorage.Core.Persistence
                 _writeOffset += totalRecordSize;
                 _blockCount++;
 
+                if (_sparseIndex != null)
+                {
+                    _sparseIndex.AddEntry(new SparseIndexEntry(
+                        block.MetricId,
+                        block.StartTimeMs,
+                        block.EndTimeMs,
+                        offset,
+                        totalRecordSize,
+                        block.Count,
+                        block.Min,
+                        block.Max,
+                        block.Sum));
+                }
+
                 // Update Header
                 _accessor.Write(8, _blockCount);
                 _accessor.Write(12, _writeOffset);
@@ -142,10 +186,58 @@ namespace ZeroStorage.Core.Persistence
             }
         }
 
+        public List<BlockOffsetInfo> ReadAllBlocksWithOffsets()
+        {
+            lock (_syncRoot)
+            {
+                var list = new List<BlockOffsetInfo>(_blockCount);
+                long offset = HeaderSize;
+
+                for (int i = 0; i < _blockCount; i++)
+                {
+                    int metricId = _accessor.ReadInt32(offset + 0);
+                    long start = _accessor.ReadInt64(offset + 4);
+                    long end = _accessor.ReadInt64(offset + 12);
+                    int count = _accessor.ReadInt32(offset + 20);
+                    double min = _accessor.ReadDouble(offset + 24);
+                    double max = _accessor.ReadDouble(offset + 32);
+                    double sum = _accessor.ReadDouble(offset + 40);
+                    int dataLen = _accessor.ReadInt32(offset + 48);
+
+                    byte[] data = new byte[dataLen];
+                    _accessor.ReadArray(offset + 52, data, 0, dataLen);
+
+                    int totalLen = 52 + dataLen;
+                    var block = new TimeSeriesBlock(metricId, start, end, count, min, max, sum, data);
+                    list.Add(new BlockOffsetInfo(block, offset, totalLen));
+
+                    offset += totalLen;
+                }
+
+                return list;
+            }
+        }
+
         public List<TimeSeriesBlock> Query(int metricId, long fromTimeMs, long toTimeMs)
         {
             lock (_syncRoot)
             {
+                if (_sparseIndex != null)
+                {
+                    var entries = _sparseIndex.QueryOverlappingEntries(metricId, fromTimeMs, toTimeMs);
+                    var results = new List<TimeSeriesBlock>(entries.Count);
+                    for (int i = 0; i < entries.Count; i++)
+                    {
+                        var entry = entries[i];
+                        long blockOffset = entry.FileOffset;
+                        int dataLen = _accessor.ReadInt32(blockOffset + 48);
+                        byte[] data = new byte[dataLen];
+                        _accessor.ReadArray(blockOffset + 52, data, 0, dataLen);
+                        results.Add(new TimeSeriesBlock(entry.MetricId, entry.StartTimeMs, entry.EndTimeMs, entry.Count, entry.Min, entry.Max, entry.Sum, data));
+                    }
+                    return results;
+                }
+
                 var matching = new List<TimeSeriesBlock>();
                 long offset = HeaderSize;
 
@@ -182,6 +274,23 @@ namespace ZeroStorage.Core.Persistence
             _accessor?.Dispose();
             _mmf?.Dispose();
             _fileStream?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Encapsulates a TimeSeriesBlock along with its physical file offset and byte length in a log file.
+    /// </summary>
+    public sealed class BlockOffsetInfo
+    {
+        public TimeSeriesBlock Block { get; }
+        public long Offset { get; }
+        public int Length { get; }
+
+        public BlockOffsetInfo(TimeSeriesBlock block, long offset, int length)
+        {
+            Block = block ?? throw new ArgumentNullException(nameof(block));
+            Offset = offset;
+            Length = length;
         }
     }
 }
