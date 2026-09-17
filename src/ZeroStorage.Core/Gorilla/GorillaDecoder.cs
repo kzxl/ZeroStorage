@@ -58,6 +58,86 @@ namespace ZeroStorage.Core.Gorilla
             return result;
         }
 
+        /// <summary>
+        /// Decodes timestamps directly into a destination span without heap allocations.
+        /// </summary>
+        public static void DecodeTimestamps(byte[] compressedBytes, Span<long> destination)
+        {
+            if (compressedBytes == null) throw new ArgumentNullException(nameof(compressedBytes));
+            if (compressedBytes.Length == 0 || destination.IsEmpty) return;
+
+            var reader = new BitStreamReader(compressedBytes);
+            int totalPoints = (int)reader.ReadBits(32);
+            int count = Math.Min(totalPoints, destination.Length);
+            if (count == 0) return;
+
+            // Point 0
+            destination[0] = (long)reader.ReadBits(64);
+            reader.ReadBits(64); // skip v0Bits
+
+            if (count == 1) return;
+
+            long prevDelta = (long)(uint)reader.ReadBits(32);
+            destination[1] = destination[0] + prevDelta;
+
+            ulong prevValBits = 0;
+            int prevLeadingZeros = 0;
+            int prevMeaningful = 0;
+            int prevTrailingZeros = 0;
+            DecodeValue(reader, ref prevValBits, ref prevLeadingZeros, ref prevMeaningful, ref prevTrailingZeros);
+
+            long prevTime = destination[1];
+
+            for (int i = 2; i < count; i++)
+            {
+                long dod = DecodeDeltaOfDelta(reader);
+                long currDelta = prevDelta + dod;
+                long currTime = prevTime + currDelta;
+
+                DecodeValue(reader, ref prevValBits, ref prevLeadingZeros, ref prevMeaningful, ref prevTrailingZeros);
+
+                destination[i] = currTime;
+                prevDelta = currDelta;
+                prevTime = currTime;
+            }
+        }
+
+        /// <summary>
+        /// Decodes floating point values directly into a destination span without heap allocations.
+        /// </summary>
+        public static void DecodeValues(byte[] compressedBytes, Span<double> destination)
+        {
+            if (compressedBytes == null) throw new ArgumentNullException(nameof(compressedBytes));
+            if (compressedBytes.Length == 0 || destination.IsEmpty) return;
+
+            var reader = new BitStreamReader(compressedBytes);
+            int totalPoints = (int)reader.ReadBits(32);
+            int count = Math.Min(totalPoints, destination.Length);
+            if (count == 0) return;
+
+            // Point 0
+            reader.ReadBits(64); // skip t0
+            ulong v0Bits = reader.ReadBits(64);
+            destination[0] = BitConverter.Int64BitsToDouble((long)v0Bits);
+
+            if (count == 1) return;
+
+            reader.ReadBits(32); // skip delta
+
+            ulong prevValBits = v0Bits;
+            int prevLeadingZeros = 0;
+            int prevMeaningful = 0;
+            int prevTrailingZeros = 0;
+
+            destination[1] = DecodeValue(reader, ref prevValBits, ref prevLeadingZeros, ref prevMeaningful, ref prevTrailingZeros);
+
+            for (int i = 2; i < count; i++)
+            {
+                DecodeDeltaOfDelta(reader);
+                destination[i] = DecodeValue(reader, ref prevValBits, ref prevLeadingZeros, ref prevMeaningful, ref prevTrailingZeros);
+            }
+        }
+
         private static long DecodeDeltaOfDelta(BitStreamReader reader)
         {
             int bit0 = reader.ReadBit();

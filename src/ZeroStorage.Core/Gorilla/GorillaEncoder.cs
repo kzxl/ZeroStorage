@@ -66,6 +66,82 @@ namespace ZeroStorage.Core.Gorilla
             }
         }
 
+        /// <summary>
+        /// Highly-optimized zero-allocation encoder for timestamps vector.
+        /// Assumes fixed zero values with zero-allocation bitstreams.
+        /// </summary>
+        public static byte[] EncodeTimestamps(ReadOnlySpan<long> timestamps)
+        {
+            if (timestamps.IsEmpty) return Array.Empty<byte>();
+
+            using (var writer = new BitStreamWriter(timestamps.Length * 2 + 64))
+            {
+                writer.WriteBits((ulong)timestamps.Length, 32);
+
+                long t0 = timestamps[0];
+                writer.WriteBits((ulong)t0, 64);
+                writer.WriteBits(0UL, 64);
+
+                if (timestamps.Length == 1) return writer.ToByteArray();
+
+                long t1 = timestamps[1];
+                long prevDelta = t1 - t0;
+                writer.WriteBits((ulong)(uint)prevDelta, 32);
+                writer.WriteBit(0); // 0.0 == 0.0 -> XOR == 0
+
+                long prevTime = t1;
+                for (int i = 2; i < timestamps.Length; i++)
+                {
+                    long currTime = timestamps[i];
+                    long currDelta = currTime - prevTime;
+                    long dod = currDelta - prevDelta;
+
+                    EncodeDeltaOfDelta(writer, dod);
+
+                    prevDelta = currDelta;
+                    prevTime = currTime;
+                    writer.WriteBit(0); // value unchanged
+                }
+
+                return writer.ToByteArray();
+            }
+        }
+
+        /// <summary>
+        /// Highly-optimized zero-allocation encoder for floating point columns with implicit uniform sequence timestamps.
+        /// </summary>
+        public static byte[] EncodeValues(ReadOnlySpan<double> values)
+        {
+            if (values.IsEmpty) return Array.Empty<byte>();
+
+            using (var writer = new BitStreamWriter(values.Length * 4 + 64))
+            {
+                writer.WriteBits((ulong)values.Length, 32);
+
+                ulong v0Bits = (ulong)BitConverter.DoubleToInt64Bits(values[0]);
+                writer.WriteBits(0UL, 64); // t0 = 0
+                writer.WriteBits(v0Bits, 64);
+
+                if (values.Length == 1) return writer.ToByteArray();
+
+                writer.WriteBits(1U, 32); // prevDelta = 1
+
+                ulong prevValBits = v0Bits;
+                int prevLeadingZeros = int.MaxValue;
+                int prevTrailingZeros = int.MaxValue;
+
+                EncodeValue(writer, values[1], ref prevValBits, ref prevLeadingZeros, ref prevTrailingZeros);
+
+                for (int i = 2; i < values.Length; i++)
+                {
+                    writer.WriteBit(0); // dod = 1 - 1 = 0
+                    EncodeValue(writer, values[i], ref prevValBits, ref prevLeadingZeros, ref prevTrailingZeros);
+                }
+
+                return writer.ToByteArray();
+            }
+        }
+
         private static void EncodeDeltaOfDelta(BitStreamWriter writer, long dod)
         {
             if (dod == 0)

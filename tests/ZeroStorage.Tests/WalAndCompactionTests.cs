@@ -196,5 +196,72 @@ namespace ZeroStorage.Tests
                 if (File.Exists(dstLog)) File.Delete(dstLog);
             }
         }
+
+        [Fact]
+        public void TestWal_HardwareCrc32C_And_LegacyCrc32_CrossVerify()
+        {
+            string tempFile = Path.Combine(Path.GetTempPath(), $"wal_crc_compat_{Guid.NewGuid():N}.wal");
+            try
+            {
+                // 1. Write with Legacy CRC32
+                using (var walLegacy = new WriteAheadLog(tempFile, autoFlush: true, checksumMode: WalChecksumMode.Crc32_Legacy))
+                {
+                    walLegacy.Append(1, Encoding.UTF8.GetBytes("Legacy Record 1"));
+                    walLegacy.Append(2, Encoding.UTF8.GetBytes("Legacy Record 2"));
+                }
+
+                // 2. Open with default (Hardware CRC32C) and append new records
+                using (var walModern = new WriteAheadLog(tempFile, autoFlush: true, checksumMode: WalChecksumMode.Crc32C_Hardware))
+                {
+                    Assert.Equal(2, walModern.LastLsn);
+                    walModern.Append(3, Encoding.UTF8.GetBytes("Hardware CRC32C Record 3"));
+                    walModern.Append(4, Encoding.UTF8.GetBytes("Hardware CRC32C Record 4"));
+                    Assert.Equal(4, walModern.LastLsn);
+
+                    // Replay all 4 records: both legacy CRC32 and hardware CRC32C records must verify cleanly!
+                    var records = walModern.ReadAllRecords();
+                    Assert.Equal(4, records.Count);
+                    Assert.Equal("Legacy Record 1", Encoding.UTF8.GetString(records[0].Payload));
+                    Assert.Equal("Legacy Record 2", Encoding.UTF8.GetString(records[1].Payload));
+                    Assert.Equal("Hardware CRC32C Record 3", Encoding.UTF8.GetString(records[2].Payload));
+                    Assert.Equal("Hardware CRC32C Record 4", Encoding.UTF8.GetString(records[3].Payload));
+                }
+            }
+            finally
+            {
+                if (File.Exists(tempFile)) File.Delete(tempFile);
+            }
+        }
+
+        [Fact]
+        public void TestWal_SpanAppend_And_SyncModes()
+        {
+            string tempFile = Path.Combine(Path.GetTempPath(), $"wal_span_{Guid.NewGuid():N}.wal");
+            try
+            {
+                using (var wal = new WriteAheadLog(tempFile))
+                {
+                    ReadOnlySpan<byte> span1 = Encoding.UTF8.GetBytes("Span Payload 1");
+                    ReadOnlySpan<byte> span2 = stackalloc byte[] { 0xAA, 0xBB, 0xCC, 0xDD };
+
+                    wal.Append(10, span1, WalSyncMode.Deferred);
+                    wal.Append(20, span2, WalSyncMode.Immediate);
+                    wal.Flush();
+
+                    Assert.Equal(2, wal.LastLsn);
+
+                    var records = wal.ReadAllRecords();
+                    Assert.Equal(2, records.Count);
+                    Assert.Equal(10, records[0].RecordType);
+                    Assert.Equal("Span Payload 1", Encoding.UTF8.GetString(records[0].Payload));
+                    Assert.Equal(20, records[1].RecordType);
+                    Assert.Equal(new byte[] { 0xAA, 0xBB, 0xCC, 0xDD }, records[1].Payload);
+                }
+            }
+            finally
+            {
+                if (File.Exists(tempFile)) File.Delete(tempFile);
+            }
+        }
     }
 }

@@ -62,13 +62,58 @@ namespace ZeroStorage.Core.TimeSeries
         }
 
         /// <summary>
-        /// Decompresses a MultiMetricBlock directly into a typed columnar DataFrame.
+        /// Converts a ColumnarBatch directly into a typed columnar DataFrame with zero element-by-element copy overhead.
+        /// </summary>
+        public static DataFrame ToDataFrame(this ColumnarBatch batch)
+        {
+            if (batch == null) throw new ArgumentNullException(nameof(batch));
+
+            int rowCount = batch.RowCount;
+            var dtArray = new DateTime[rowCount];
+            for (int r = 0; r < rowCount; r++)
+            {
+                dtArray[r] = DateTimeOffset.FromUnixTimeMilliseconds(batch.Timestamps[r]).UtcDateTime;
+            }
+
+            var df = new DataFrame();
+            df.AddColumn(new DataColumn<DateTime>("Timestamp", dtArray));
+
+            for (int f = 0; f < batch.Schema.Fields.Count; f++)
+            {
+                var field = batch.Schema.Fields[f];
+                switch (field.Type)
+                {
+                    case MultiMetricType.Float64:
+                        df.AddColumn(new DataColumn<double>(field.Name, batch.GetFloat64Column(f)));
+                        break;
+                    case MultiMetricType.Int64:
+                        df.AddColumn(new DataColumn<long>(field.Name, batch.GetInt64Column(f)));
+                        break;
+                    case MultiMetricType.Int32:
+                        df.AddColumn(new DataColumn<int>(field.Name, batch.GetInt32Column(f)));
+                        break;
+                    case MultiMetricType.Boolean:
+                        df.AddColumn(new DataColumn<bool>(field.Name, batch.GetBooleanColumn(f)));
+                        break;
+                    case MultiMetricType.Decimal:
+                        df.AddColumn(new DataColumn<decimal>(field.Name, batch.GetDecimalColumn(f)));
+                        break;
+                    case MultiMetricType.String:
+                        df.AddColumn(new DataColumn<string>(field.Name, batch.GetStringColumn(f)));
+                        break;
+                }
+            }
+
+            return df;
+        }
+
+        /// <summary>
+        /// Decompresses a MultiMetricBlock directly into a typed columnar DataFrame via ColumnarBatch.
         /// </summary>
         public static DataFrame ToDataFrame(this MultiMetricBlock block)
         {
             if (block == null) throw new ArgumentNullException(nameof(block));
-            var rows = block.Decompress();
-            return block.Schema.ToDataFrame(rows);
+            return block.DecompressColumnar().ToDataFrame();
         }
 
         private static IDataColumn CreateTypedColumn(string name, MultiMetricType type, IReadOnlyList<MultiMetricRow> rows, int fieldIdx, int rowCount)
