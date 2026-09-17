@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using ZeroStorage.Core.Analytics;
 using ZeroStorage.Core.Gorilla;
 using ZeroStorage.Core.Indexing;
 using ZeroStorage.Core.Persistence;
@@ -340,6 +341,37 @@ namespace ZeroStorage.Core.Engine
 
                 return result;
             }
+        }
+
+        /// <summary>
+        /// Queries time-series points and applies storage-level LTTB (Largest-Triangle-Three-Buckets) decimation
+        /// to return at most targetThreshold representative points for high-frequency chart rendering.
+        /// </summary>
+        public List<TimeSeriesPoint> QueryLttb(int metricId, long fromTimeMs, long toTimeMs, int targetThreshold)
+        {
+            var rawPoints = Query(metricId, fromTimeMs, toTimeMs);
+            return LttbDecimator.Decimate(rawPoints, targetThreshold);
+        }
+
+        /// <summary>
+        /// Queries multiple time-series by measurement and tag filters, applying storage-level LTTB downsampling per series.
+        /// </summary>
+        public Dictionary<int, List<TimeSeriesPoint>> QuerySeriesLttb(
+            string? measurement,
+            long fromTimeMs,
+            long toTimeMs,
+            int targetThreshold,
+            params KeyValuePair<string, string>[] tagFilters)
+        {
+            var rawSeries = QuerySeries(measurement, fromTimeMs, toTimeMs, tagFilters);
+            var result = new Dictionary<int, List<TimeSeriesPoint>>(rawSeries.Count);
+
+            foreach (var kvp in rawSeries)
+            {
+                result[kvp.Key] = LttbDecimator.Decimate(kvp.Value, targetThreshold);
+            }
+
+            return result;
         }
 
         #endregion
