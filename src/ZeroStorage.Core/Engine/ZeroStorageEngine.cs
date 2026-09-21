@@ -21,6 +21,21 @@ namespace ZeroStorage.Core.Engine
         public WalChecksumMode WalChecksumMode { get; set; } = WalChecksumMode.Crc32C_Hardware;
         public bool EnableSparseIndex { get; set; } = true;
 
+        /// <summary>
+        /// Gets or sets whether out-of-order timestamp arrivals are allowed and automatically sorted.
+        /// </summary>
+        public bool AllowOutOfOrder { get; set; } = true;
+
+        /// <summary>
+        /// Maximum allowed time delay in milliseconds for out-of-order packets (default: 24 hours).
+        /// </summary>
+        public long OutOfOrderGracePeriodMs { get; set; } = 24 * 3600 * 1000L;
+
+        /// <summary>
+        /// Gets or sets whether duplicate timestamps for the same metric are deduplicated (keeping latest value).
+        /// </summary>
+        public bool DeduplicateTimestamps { get; set; } = true;
+
         public ZeroStorageEngineOptions(string dataDirectory)
         {
             DataDirectory = dataDirectory ?? throw new ArgumentNullException(nameof(dataDirectory));
@@ -147,7 +162,13 @@ namespace ZeroStorage.Core.Engine
                 // Sort chronologically before compression
                 points.Sort((a, b) => a.TimestampMs.CompareTo(b.TimestampMs));
 
-                var block = TimeSeriesBlock.FromPoints(metricId, points);
+                var cleanPoints = points;
+                if (_options.DeduplicateTimestamps && points.Count > 1)
+                {
+                    cleanPoints = Deduplicate(points);
+                }
+
+                var block = TimeSeriesBlock.FromPoints(metricId, cleanPoints);
                 log.AppendBlock(block);
             }
 
@@ -240,8 +261,45 @@ namespace ZeroStorage.Core.Engine
 
                 // 3. Sort chronologically
                 allPoints.Sort((a, b) => a.TimestampMs.CompareTo(b.TimestampMs));
+
+                // 4. Deduplicate if enabled
+                if (_options.DeduplicateTimestamps && allPoints.Count > 1)
+                {
+                    return Deduplicate(allPoints);
+                }
+
                 return allPoints;
             }
+        }
+
+        /// <summary>
+        /// Queries aggregated time-series buckets (Min, Max, Avg, Count) across a specified time range.
+        /// </summary>
+        public List<RollupBucket> QueryRollup(int metricId, long fromTimeMs, long toTimeMs, RollupInterval interval)
+        {
+            var rawPoints = Query(metricId, fromTimeMs, toTimeMs);
+            return TimeSeriesRollup.ComputeRollup(rawPoints, interval);
+        }
+
+        /// <summary>
+        /// Queries aggregated time-series buckets by measurement and tag filters.
+        /// </summary>
+        public Dictionary<int, List<RollupBucket>> QuerySeriesRollup(
+            string? measurement,
+            long fromTimeMs,
+            long toTimeMs,
+            RollupInterval interval,
+            params KeyValuePair<string, string>[] tagFilters)
+        {
+            var seriesDict = QuerySeries(measurement, fromTimeMs, toTimeMs, tagFilters);
+            var result = new Dictionary<int, List<RollupBucket>>();
+
+            foreach (var kvp in seriesDict)
+            {
+                result[kvp.Key] = TimeSeriesRollup.ComputeRollup(kvp.Value, interval);
+            }
+
+            return result;
         }
 
         /// <summary>
@@ -441,6 +499,28 @@ namespace ZeroStorage.Core.Engine
 
                 return groups.Count;
             }
+        }
+
+        private static List<TimeSeriesPoint> Deduplicate(List<TimeSeriesPoint> points)
+        {
+            var result = new List<TimeSeriesPoint>(points.Count);
+            result.Add(points[0]);
+
+            for (int i = 1; i < points.Count; i++)
+            {
+                var prev = result[result.Count - 1];
+                var cur = points[i];
+                if (cur.TimestampMs == prev.TimestampMs)
+                {
+                    // Overwrite with latest ingested value for duplicate timestamp
+                    result[result.Count - 1] = cur;
+                }
+                else
+                {
+                    result.Add(cur);
+                }
+            }
+            return result;
         }
 
         #endregion
