@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
+using ZeroPrimitives.Core.Identifiers;
 using ZeroPrimitives.Cryptography;
 
 namespace ZeroStorage.Core.Persistence
@@ -27,18 +28,21 @@ namespace ZeroStorage.Core.Persistence
 
     /// <summary>
     /// Represents an individual record within a Write-Ahead Log.
+    /// Features a unique, time-ordered 128-bit <see cref="Uuid7"/> RecordId.
     /// </summary>
     public sealed class WalRecord
     {
+        public Uuid7 RecordId { get; }
         public long Lsn { get; }
         public byte RecordType { get; }
         public byte[] Payload { get; }
 
-        public WalRecord(long lsn, byte recordType, byte[] payload)
+        public WalRecord(long lsn, byte recordType, byte[] payload, Uuid7 recordId = default)
         {
             Lsn = lsn;
             RecordType = recordType;
             Payload = payload ?? Array.Empty<byte>();
+            RecordId = recordId == default ? Uuid7.NewUuid() : recordId;
         }
     }
 

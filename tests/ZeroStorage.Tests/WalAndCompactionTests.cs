@@ -263,5 +263,45 @@ namespace ZeroStorage.Tests
                 if (File.Exists(tempFile)) File.Delete(tempFile);
             }
         }
+
+        [Fact]
+        public void TestDisruptorWalWriter_LockFreeAppendAndRecovery()
+        {
+            string tempFile = Path.Combine(Path.GetTempPath(), $"disruptor_wal_{Guid.NewGuid():N}.wal");
+            try
+            {
+                using (var wal = new WriteAheadLog(tempFile))
+                using (var writer = new DisruptorWalWriter(wal, ringCapacityPowerOfTwo: 128))
+                {
+                    // Synchronous enqueues
+                    long lsn1 = writer.Enqueue(1, Encoding.UTF8.GetBytes("Disruptor event 1"), WalSyncMode.Deferred);
+                    long lsn2 = writer.Enqueue(2, Encoding.UTF8.GetBytes("Disruptor event 2"), WalSyncMode.Immediate);
+
+                    Assert.Equal(1, lsn1);
+                    Assert.Equal(2, lsn2);
+                    Assert.Equal(2, writer.LastLsn);
+
+                    var records = wal.ReadAllRecords();
+                    Assert.Equal(2, records.Count);
+                    Assert.NotEqual(ZeroPrimitives.Core.Identifiers.Uuid7.Empty, records[0].RecordId);
+                    Assert.NotEqual(ZeroPrimitives.Core.Identifiers.Uuid7.Empty, records[1].RecordId);
+                    Assert.NotEqual(records[0].RecordId, records[1].RecordId);
+                }
+
+                // Verify re-reading log from disk
+                using (var wal = new WriteAheadLog(tempFile))
+                {
+                    Assert.Equal(2, wal.LastLsn);
+                    var records = wal.ReadAllRecords();
+                    Assert.Equal(2, records.Count);
+                    Assert.Equal("Disruptor event 1", Encoding.UTF8.GetString(records[0].Payload));
+                    Assert.Equal("Disruptor event 2", Encoding.UTF8.GetString(records[1].Payload));
+                }
+            }
+            finally
+            {
+                if (File.Exists(tempFile)) File.Delete(tempFile);
+            }
+        }
     }
 }
