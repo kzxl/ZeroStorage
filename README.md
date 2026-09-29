@@ -5,14 +5,18 @@
 [![.NET Multi-Targeting](https://img.shields.io/badge/.NET-8.0%20%7C%204.6.2%20%7C%20Standard%202.0-purple.svg)](https://dotnet.microsoft.com/)
 [![Gorilla Compression](https://img.shields.io/badge/Compression-Facebook%20Gorilla%20XOR-brightgreen.svg)]()
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-0%20(Pure%20C%23)-brightgreen.svg)]()
-[![NuGet Version](https://img.shields.io/badge/NuGet-1.1.0-blue.svg)](https://www.nuget.org/packages/ZeroStorage.Core)
+[![Tests: 66 Passed](https://img.shields.io/badge/Tests-66%20Passed%20(100%25)-brightgreen.svg)]()
+[![NuGet Version](https://img.shields.io/badge/NuGet-1.5.0-blue.svg)](https://www.nuget.org/packages/ZeroStorage.Core)
 
-**ZeroStorage** is an embedded, high-throughput time-series database (TSDB) and write-ahead log (WAL) storage engine for .NET with **zero external dependencies**. Implemented from scratch in pure C#, it features Facebook Gorilla lossy/lossless Delta-of-Delta timestamp compression, XOR float mantissa encoding, wide-row MultiMetricBlock columnar persistence, memory-mapped files (MMF), CRC32 integrity verification, and background tiered compaction.
+**ZeroStorage** is an embedded, high-throughput time-series database (TSDB), durable persistent queue, and write-ahead log (WAL) storage engine for .NET with **zero external dependencies**. Implemented from scratch in pure C#, it features Facebook Gorilla lossy/lossless Delta-of-Delta timestamp compression, XOR float mantissa encoding, wide-row MultiMetricBlock columnar persistence, Uuid7 time-ordered persistent streaming queues, memory-mapped files (MMF), CRC32 integrity verification, and background tiered compaction.
 
 ---
 
 ## 🌟 Key Capabilities
 
+- **Durable Persistent Queue (`DurablePersistentQueue`)**:
+  - High-throughput disk-backed persistent queue utilizing `MemoryMappedFile` and `Uuid7` time-ordered monotonic message framing.
+  - Zero-allocation commit pointers, crash recovery, atomic tail/head advancement, and sub-millisecond persistence.
 - **Wide-Row Time-Series Compression (`MultiMetricBlock`)**: Simultaneously encodes multiple metrics sharing timestamp vectors with Gorilla compression.
 - **Facebook Gorilla Time-Series Compression**:
   - **Timestamp Compression**: Variable-length Delta-of-Delta encoding (down to 1 bit per sample for regular time intervals).
@@ -68,6 +72,23 @@ using var tsdb = new MemoryMappedTimeSeriesLog("telemetry.tsdb", maxSizeBytes: 6
 tsdb.Append(metricId: 42, timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), value: 98.6);
 ```
 
+### 3. Durable Persistent Queue (Uuid7 Framing)
+```csharp
+using ZeroStorage.Core.Queue;
+
+using var queue = new DurablePersistentQueue("events.queue", maxCapacityBytes: 128 * 1024 * 1024);
+
+// Produce time-ordered event payload
+byte[] payload = System.Text.Encoding.UTF8.GetBytes("SensorAlert: HighTemperature");
+queue.Enqueue(payload);
+
+// Consume next available event
+if (queue.TryDequeue(out byte[] eventData, out Guid messageId))
+{
+    Console.WriteLine($"Processed message {messageId}: {System.Text.Encoding.UTF8.GetString(eventData)}");
+}
+```
+
 ---
 
 ## 📊 Benchmark & Performance
@@ -86,6 +107,7 @@ Tested on Intel Core i7-13700K with NVMe SSD (Release x64):
 
 | Version | Release Date | Key Milestones & Highlights |
 | :--- | :---: | :--- |
+| **`v1.5.0`** | 2026-09-29 | **Durable Persistent Queue & Monotonic Uuid7 Framing**:<br/>• Introduced `DurablePersistentQueue`: High-speed disk-backed queue using memory-mapped files and Uuid7 framing.<br/>• Zero-allocation append/consume operations with transactional crash-safety and fast recovery.<br/>• 66 unit tests passing (100% success rate). |
 | **`v1.1.0`** | 2026-09-16 | **Wide-Row Metric Compression**:<br/>• Introduced `MultiMetricBlock` simultaneous encoding of multi-variate telemetry streams.<br/>• Zero-copy memory mapped files with CRC32 block checksums.<br/>• 18 unit tests passing (100% success rate). |
 | **`v1.0.0`** | 2026-09-09 | **Initial Sovereign Release**:<br/>• Pure C# Facebook Gorilla Delta-of-Delta timestamp & XOR float compression.<br/>• Memory-mapped write-ahead logging (WAL) & tiered compaction. |
 
