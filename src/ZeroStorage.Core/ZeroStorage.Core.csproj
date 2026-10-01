@@ -17,8 +17,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="ZeroPrimitives.Core" Version="1.6.0" />
+    <PackageReference Include="ZeroPrimitives.Core" Version="1.7.0" />
     <PackageReference Include="ZeroConcurrency" Version="1.4.0" />
-    <PackageReference Include="ZeroData.Core" Version="1.4.0" />
+    <PackageReference Include="ZeroData.Core" Version="1.5.0" />
   </ItemGroup>
 </Project>
